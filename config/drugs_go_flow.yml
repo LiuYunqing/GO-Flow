@@ -1,0 +1,243 @@
+# GO-Flow Configuration: Geodesic and Optimal Transport Hybrid Flow
+# Three-stage training for molecular conformer generation
+
+# Model architecture
+model:
+  type: go_flow
+  hidden_dim: 128
+  n_layers: 8
+  
+  # Translation flow settings
+  translation:
+    hidden_dim: 128
+    use_linear_path: true
+  
+  # Rotation flow settings  
+  rotation:
+    hidden_dim: 128
+    num_layers: 3
+    use_geodesic: true
+    quaternion_normalization: true
+  
+  # Conformation flow settings
+  conformation:
+    dim_internal: 30  # Placeholder - will be dynamic based on molecule size
+    hidden_dim: 128
+    epsilon: 0.1  # Entropic regularization for OT
+    num_iterations: 5  # Sinkhorn iterations
+    use_schrodinger_bridge: true
+    sigma: 0.01  # Diffusion coefficient for Schrödinger Bridge
+  
+  # Cross-attention settings
+  cross_attention:
+    num_heads: 4
+    dropout: 0.1
+  
+  # EGNN encoder settings
+  egnn:
+    hidden_nf: 128
+    n_layers: 6
+    attention: true
+    tanh: true
+    norm_constant: 1
+    inv_sublayers: 2
+    sin_embedding: true
+    normalization_factor: 100
+    aggregation_method: sum
+
+# Dataset configuration
+dataset:
+  train: ./data/GEOM/train_data_40k.pkl
+  val: ./data/GEOM/val_data_5k.pkl
+  test: ./data/GEOM/test_data_1k.pkl
+  
+  num_workers: 4
+  
+  transform:
+    train:
+      noise_scale: 0.1
+      augmentation: true
+    val:
+      noise_scale: 0.0
+      augmentation: false
+
+# Training configuration
+train:
+  batch_size: 64 #64
+  grad_norm: 5.0
+  log_dir: ./logs
+  save_dir: ./checkpoints/go_flow
+
+# Stage 1: Separate coordinate space training
+stage1:
+  # Enable parallel training (new feature - 60-70% faster!)
+  parallel_training: true  # Set to true for parallel training, false for sequential
+  parallel_epochs: 20  # Number of epochs for parallel training
+  
+  # Learning rates for each module
+  translation_lr: 1e-3
+  rotation_lr: 1e-3
+  conformation_lr: 1e-3
+  shared_lr: 5e-4  # Learning rate for shared parameters (EGNN encoder)
+  
+  # Sequential training settings (used when parallel_training=false)
+  translation_epochs: 20
+  rotation_epochs: 20
+  conformation_epochs: 20
+  
+  # Training settings
+  val_freq: 2  # Validation frequency (epochs)
+  save_freq: 2  # Model checkpoint frequency (epochs)
+  early_stopping_patience: 5  # Stop if val loss doesn't improve
+  
+  # Loss configuration for stage 1
+  loss:
+    # Adaptive weighting for parallel training
+    use_adaptive_weights: true  # Enable uncertainty-based adaptive weighting
+    
+    # Initial weights (used when adaptive_weights=true)
+    init_translation_weight: 1.0
+    init_rotation_weight: 1.0  # Now enabled for parallel training
+    init_conformation_weight: 1.0  # Now enabled for parallel training
+    
+    # Fixed weights (used when adaptive_weights=false)
+    translation_weight: 1.0
+    rotation_weight: 1.0  # Changed from 0.0 to 1.0 for parallel
+    conformation_weight: 1.0  # Changed from 0.0 to 1.0 for parallel
+    flow_matching_weight: 0.5
+    
+    # Component-specific settings
+    translation_velocity_weight: 0.1
+    rotation_velocity_weight: 0.1
+    geodesic_weight: 1.0
+    wasserstein_weight: 1.0
+    energy_weight: 0.1
+    coordinate_weight: 0.5
+    
+    # Legacy setting (kept for compatibility)
+    use_adaptive_weighting: false
+
+# Stage 2: Joint training
+stage2:
+  epochs: 50
+  lr: 5e-4
+  warmup_epochs: 5
+  
+  use_ema: true
+  ema_decay: 0.999
+  
+  val_freq: 5
+  save_freq: 5
+  
+  # Loss configuration for stage 2
+  loss:
+    translation_weight: 1.0
+    rotation_weight: 1.0
+    conformation_weight: 1.0
+    flow_matching_weight: 1.0
+    translation_velocity_weight: 0.1
+    rotation_velocity_weight: 0.1
+    geodesic_weight: 1.0
+    wasserstein_weight: 1.0
+    energy_weight: 0.1
+    coordinate_weight: 0.5
+    use_adaptive_weighting: false
+
+# Stage 3: Fine-tuning with full integration
+stage3:
+  epochs: 30
+  lr: 1e-4
+  ema_decay: 0.9999
+  
+  # ODE solver settings
+  ode_method: rk4  # euler, midpoint, rk4, dopri5
+  ode_steps: 50
+  adaptive_ode: false
+  
+  # Advanced training techniques
+  importance_sampling: true
+  sample_during_training: true
+  num_eval_batches: 5
+  
+  # Multi-scale loss
+  use_multiscale: true
+  atom_weight: 1.0
+  fragment_weight: 0.5
+  multiscale_weight: 0.2
+  
+  val_freq: 2
+  
+  # Loss configuration for stage 3 (with adaptive weighting)
+  loss:
+    translation_weight: 1.0
+    rotation_weight: 1.0
+    conformation_weight: 1.0
+    flow_matching_weight: 1.5
+    translation_velocity_weight: 0.05
+    rotation_velocity_weight: 0.05
+    geodesic_weight: 1.2
+    wasserstein_weight: 1.2
+    energy_weight: 0.15
+    coordinate_weight: 0.6
+    use_adaptive_weighting: true  # Enable adaptive loss weighting
+
+# Sampling configuration
+sampling:
+  method: ode  # ode or sde
+  num_steps: 100
+  temperature: 1.0
+  
+  # ODE-specific settings
+  ode:
+    solver: rk4
+    adaptive: true
+    rtol: 1e-4
+    atol: 1e-5
+  
+  # SDE-specific settings
+  sde:
+    predictor: euler
+    corrector: langevin
+    corrector_steps: 1
+    snr: 0.16
+
+# Evaluation metrics
+evaluation:
+  metrics:
+    - coverage  # Conformer coverage
+    - rmsd      # Root mean square deviation
+    - energy    # Energy accuracy
+    - validity  # Chemical validity
+  
+  thresholds:
+    coverage_threshold: 0.5  # Angstrom
+    energy_threshold: 1.0     # kcal/mol
+  
+  num_samples: 50  # Number of samples per molecule for evaluation
+
+# Experimental features
+experimental:
+  # Flow matching enhancements
+  use_flow_matching_v2: false
+  flow_matching_beta: 2.0
+  
+  # Coordinate space coupling
+  coupling_strength: 0.1
+  coupling_schedule: linear  # linear, cosine, exponential
+  
+  # Regularization
+  entropy_regularization: 0.01
+  manifold_regularization: 0.001
+  
+  # Data augmentation
+  rotation_augmentation: true
+  translation_augmentation: true
+  
+  # Efficiency optimizations
+  gradient_checkpointing: false
+  mixed_precision: false
+  
+  # Debugging
+  debug_mode: false
+  log_gradients: false
+  profile_performance: false
